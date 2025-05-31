@@ -1,9 +1,9 @@
-from bs4 import BeautifulSoup
 import githubapi
 
 import os
 from tempfile import TemporaryDirectory
 from zipfile import ZipFile
+from xml.etree import ElementTree
 
 from colorama import Fore, Back, Style
 import vdf, winreg
@@ -137,26 +137,16 @@ def update_mod_index(game_path: str) -> int:
     if not os.path.exists(index_dir):
         os.makedirs(index_dir)
 
-    with r_get("https://hk-modding.org/mods", verify=False) as r:
+    with r_get(
+        "https://github.com/hk-modding/modlinks/raw/refs/heads/main/ModLinks.xml",
+        verify=False,
+    ) as r:
         if r.ok:
-            bs = BeautifulSoup(r.content, "html.parser")
-            with open(os.path.join(index_dir, "mod_index"), "w") as f:
-                try:
-                    for div in bs.body.main.div:  # type: ignore
-                        try:
-                            data: str = div.p.get_text()  # type: ignore
-                            name = data[: data.find("https://")]
-                            url = div.p.a.get_text()  # type: ignore
-
-                            f.write(f"{name}\t{url}\n")
-                        except AttributeError:
-                            continue
-                except AttributeError:
-                    error("Error parsing the mod index page.")
-                    return 1
+            with open(os.path.join(index_dir, "ModLinks.xml"), "wd") as f:
+                f.write(r.content)
         else:
             error(
-                f"Error getting the mod index page. Error code: {r.status_code}-{r.reason}"
+                f"Error downloading mod index. Error code: {r.status_code}-{r.reason}"
             )
             return 1
         return 0
@@ -173,31 +163,29 @@ def install_mod(game_path: str, name: str) -> int:
         int: 0 if successful, 1 if failed.
     """
     index_dir = os.path.expanduser("~/AppData/Local/HKMM/")
-    with open(os.path.join(index_dir, "mod_index"), "r") as f:
-        for line in f.readlines():
-            if line.startswith(name):
-                _url = line.split("\t")[1].strip("\n")
+    with open(os.path.join(index_dir, "ModLinks.xml"), "r") as f:
+        et = ElementTree.parse(f)
+        for mod in et.findall("Manifest"):
+            if mod.get("Name") == name:
+                url = mod.get("Link")
+                dependencies = mod.findall("Dependency")
                 break
         else:
-            error("Mod not found in the index.")
+            error(f"Mod '{name}' not found in the mod index.")
             return 1
-    o_r = githubapi.get_owner_and_repo(_url)
-    if o_r and all(o_r):
-        assets = githubapi.get_latest_release(o_r[0], o_r[1])["assets"]  # type: ignore
-        for asset in assets:
-            if asset["name"].endswith(".zip"):
-                url = asset["browser_download_url"]
-                break
-    else:
-        raise ValueError("Invalid URL or unable to extract owner and repo.")
-        return 1
 
     with TemporaryDirectory() as temp_dir:
         with r_get(url, stream=True, verify=False) as r:  # type: ignore
             if r.ok:
+                filename = (
+                    r.headers.get("Content-Disposition", 'filename="mod"')
+                    .split("filename=")[-1]
+                    .strip('"')
+                )
+
                 total_size = int(r.headers.get("Content-Length", 0))
                 got_size = 0
-                with open(os.path.join(temp_dir, "mod.zip"), "wb") as f:
+                with open(os.path.join(temp_dir, filename), "wb") as f:
                     info(f"Downloading {r.url} ...")
 
                     for chunk in r.iter_content(chunk_size=8192):
@@ -212,15 +200,34 @@ def install_mod(game_path: str, name: str) -> int:
                 error(f"Error downloading.Error code: {r.status_code}-{r.reason}")
                 return 1
 
-        with ZipFile(os.path.join(temp_dir, "mod.zip"), "r") as zip_ref:
-            info("Extracting mod.zip...")
+        if filename.endswith(".zip"):
+            with ZipFile(os.path.join(temp_dir, filename), "r") as zip_ref:
+                info(f"Extracting {filename}...")
+                path = os.path.join(
+                    game_path, f"hollow_knight_Data/Managed/Mods/{name}"
+                )
+                for file in zip_ref.filelist:
+                    if not file.filename.startswith("README"):
+                        zip_ref.extract(file, path)
+                info("\nExtraction complete.")
+                return 0
+        else:
+            info(
+                f"Copying {filename} to {game_path}/hollow_knight_Data/Managed/Mods/{name}..."
+            )
             path = os.path.join(game_path, f"hollow_knight_Data/Managed/Mods/{name}")
-            total = len(zip_ref.filelist) - 1
-            got = 0
-            for file in zip_ref.filelist:
-                if not file.filename.startswith("README"):
-                    zip_ref.extract(file, path)
-                    got += 1
-                    print(f"{got/total*100:3.2f}%({got} / {total})", end="\r")
-            info("\nExtraction complete.")
-            return 0
+            if not os.path.exists(path):
+                os.makedirs(path)
+            with open(os.path.join(path, filename), "wb") as f:
+                with open(os.path.join(temp_dir, filename), "rb") as mod_file:
+                    f.write(mod_file.read())
+            info("Copy complete.")
+        
+        for dependency in dependencies:
+            dep_name = dependency.get("Name")
+            if not dep_name:
+                continue
+            info(f"Installing dependency: {dep_name}")
+            if install_mod(game_path, dep_name) != 0:
+                warning(f"Failed to install dependency: {dep_name}")
+            

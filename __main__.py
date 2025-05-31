@@ -69,7 +69,7 @@ class HKMM(Cmd):
     def do_list(self, args):
         """List installed mods."""
         if not self.game_path:
-            warning(
+            error(
                 'Hollow Knight not found! Please set the path by command "gamepath path/to/game/".'
             )
             return
@@ -84,7 +84,7 @@ class HKMM(Cmd):
     def do_update(self, args):
         """Update the mod index"""
         if not self.game_path:
-            warning(
+            error(
                 'Hollow Knight not found! Please set the path by command "gamepath path/to/game/".'
             )
             return
@@ -97,7 +97,7 @@ class HKMM(Cmd):
     def do_install(self, args):
         """Install a mod."""
         if not self.game_path:
-            warning(
+            error(
                 'Hollow Knight not found! Please set the path by command "gamepath path/to/game/".'
             )
             return
